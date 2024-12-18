@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Gamedev Phaser Workshop - lesson 16: Randomizing gameplay</title>
+    <style>
+        /* 全局样式重置 */
+        * {
+            padding: 0;
+            margin: 0;
+            box-sizing: border-box;
+        }
+
+        /* 输入框通用样式 */
+        input[type="text"] {
+            width: 150px;
+            height: 25px;
+            margin-bottom: 10px;
+            padding-left: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+
+        /* 按钮通用样式 */
+        button {
+            width: 100px;
+            height: 30px;
+            background-color: #0095DD;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            /* 添加过渡效果，使按钮颜色变化更平滑 */
+        }
+
+        button:hover {
+            background-color: #0073AA;
+            /* 鼠标悬停时按钮背景色变化 */
+        }
+
+        /* 注册按钮样式，可单独调整 */
+        #registerButton {
+            margin-right: 10px;
+        }
+
+        /* 开始游戏按钮样式，可单独调整 */
+        #startButton {
+            margin-top: 10px;
+        }
+
+        /* 为按钮添加阴影效果，使其更立体 */
+        button:active {
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+
+        /* 游戏区域样式（示例，可根据实际情况调整） */
+        #game-container {
+            width: 480px;
+            height: 320px;
+            margin: 20px auto;
+            border: 1px solid #ccc;
+            background-color: #eee;
+        }
+    </style>
+    <script src="phaser.min.js"></script>
+    <!-- 引入axios库用于发送HTTP请求，方便与后端交互 -->
+    <script src="https://unpkg.com/axios@1.4.0/dist/axios.min.js"></script>
+</head>
+
+<body>
+    <!-- 页面标题 -->
+    <h1>2D Breakout Game</h1>
+
+    <!-- 添加用户名输入框 -->
+    <input type="text" id="usernameInput" placeholder="Enter username" />
+    <!-- 添加邮箱输入框 -->
+    <input type="text" id="emailInput" placeholder="Enter email" />
+    <!-- 添加注册按钮 -->
+    <button id="registerButton">Register Player</button>
+
+    <!-- 游戏容器 -->
+    <div id="game-container"></div>
+
+    <script>
+        const baseUrl = "http://127.0.0.1:5000";  // 根据实际后端服务运行的地址和端口修改
+
+        // 创建Phaser游戏实例，并挂载到指定的游戏容器元素上
+        var game = new Phaser.Game(480, 320, Phaser.AUTO, document.getElementById('game-container'), {
+            preload: preload,
+            create: create,
+            update: update
+        });
+
+        var ball;
+        var paddle;
+        var bricks;
+        var newBrick;
+        var brickInfo;
+        var scoreText;
+        var score = 0;
+        var lives = 3;
+        var livesText;
+        var lifeLostText;
+        var playing = false;
+        var startButton;
+
+        function preload() {
+            game.scale.scaleMode = Phaser.ScaleManager.SHOW_ALL;
+            game.scale.pageAlignHorizontally = true;
+            game.scale.pageAlignVertically = true;
+            game.stage.backgroundColor = '#eee';
+            game.load.image('paddle', 'paddle.png');
+            game.load.image('brick', 'brick.png');
+            game.load.spritesheet('ball', 'wobble.png', 20, 20);
+            game.load.spritesheet('button', 'button.png', 120, 40);
+        }
+
+        function create() {
+            game.physics.startSystem(Phaser.Physics.ARCADE);
+            game.physics.arcade.checkCollision.down = false;
+
+            // 创建球精灵
+            ball = game.add.sprite(game.world.width * 0.5, game.world.height - 25, 'ball');
+            ball.animations.add('wobble', [0, 1, 0, 2, 0, 1, 0, 2, 0], 24);
+            ball.anchor.set(0.5);
+            game.physics.enable(ball, Phaser.Physics.ARCADE);
+            ball.body.collideWorldBounds = true;
+            ball.body.bounce.set(1);
+            ball.checkWorldBounds = true;
+            ball.events.onOutOfBounds.add(ballLeaveScreen, this);
+
+            // 创建球拍精灵
+            paddle = game.add.sprite(game.world.width * 0.5, game.world.height - 5, 'paddle');
+            paddle.anchor.set(0.5, 1);
+            game.physics.enable(paddle, Phaser.Physics.ARCADE);
+            paddle.body.immovable = true;
+
+            initBricks();
+
+            textStyle = { font: '18px Arial', fill: '#0095DD' };
+            scoreText = game.add.text(5, 5, 'Points: 0', textStyle);
+            livesText = game.add.text(game.world.width - 5, 5, 'Lives: ' + lives, textStyle);
+            livesText.anchor.set(1, 0);
+            lifeLostText = game.add.text(game.world.width * 0.5, game.world.height * 0.5, 'Life lost, tap to continue', textStyle);
+            lifeLostText.anchor.set(0.5);
+            lifeLostText.visible = false;
+
+            startButton = game.add.button(game.world.width * 0.5, game.world.height * 0.5, 'button', startGame, this, 1, 0, 2);
+            startButton.id = "startButton"; // 为按钮添加id属性，方便后续选择器操作（可选，根据实际情况）
+            startButton.anchor.set(0.5);
+        }
+
+        function update() {
+            game.physics.arcade.collide(ball, paddle, ballHitPaddle);
+            game.physics.arcade.collide(ball, bricks, ballHitBrick);
+            if (playing) {
+                paddle.x = game.input.x || game.world.width * 0.5;
+            }
+        }
+
+        function initBricks() {
+            brickInfo = {
+                width: 50,
+                height: 20,
+                count: {
+                    row: 7,
+                    col: 3
+                },
+                offset: {
+                    top: 50,
+                    left: 60
+                },
+                padding: 10
+            }
+            bricks = game.add.group();
+            for (c = 0; c < brickInfo.count.col; c++) {
+                for (r = 0; r < brickInfo.count.row; r++) {
+                    var brickX = (r * (brickInfo.width + brickInfo.padding)) + brickInfo.offset.left;
+                    var brickY = (c * (brickInfo.height + brickInfo.padding)) + brickInfo.offset.top;
+                    newBrick = game.add.sprite(brickX, brickY, 'brick');
+                    game.physics.enable(newBrick, Phaser.Physics.ARCADE);
+                    newBrick.body.immovable = true;
+                    newBrick.anchor.set(0.5);
+                    bricks.add(newBrick);
+                }
+            }
+        }
+
+        function ballHitBrick(ball, brick) {
+            var killTween = game.add.tween(brick.scale);
+            killTween.to({ x: 0, y: 0 }, 200, Phaser.Easing.Linear.None);
+            killTween.onComplete.addOnce(function () {
+                brick.kill();
+            }, this);
+            killTween.start();
+            score += 10;
+            scoreText.setText('Points: ' + score);
+            // 判断是否赢得游戏，若赢了则记录分数并弹出提示等后续操作
+            if (score === brickInfo.count.row * brickInfo.count.col * 10) {
+                recordScore();
+                alert('You won the game, congratulations!');
+                location.reload();
+            }
+        }
+
+        function ballLeaveScreen() {
+            lives--;
+            if (lives) {
+                livesText.setText('Lives: ' + lives);
+                lifeLostText.visible = true;
+                ball.reset(game.world.width * 0.5, game.world.height - 25);
+                paddle.reset(game.world.width * 0.5, game.world.height - 5);
+                game.input.onDown.addOnce(function () {
+                    lifeLostText.visible = false;
+                    ball.body.velocity.set(150, -150);
+                }, this);
+            } else {
+                alert('You lost, game over!');
+                location.reload();
+            }
+        }
+
+        function ballHitPaddle(ball, paddle) {
+            ball.animations.play('wobble');
+            ball.body.velocity.x = -1 * 5 * (paddle.x - ball.x);
+        }
+
+        function startGame() {
+            startButton.destroy();
+            ball.body.velocity.set(150, -150);
+            playing = true;
+        }
+
+        // 注册玩家函数，向后端发送添加玩家请求
+        function registerPlayer() {
+            const username = document.getElementById('usernameInput').value;
+            const email = document.getElementById('emailInput').value;
+            axios.post(`${baseUrl}/players`, {
+                username: username,
+                email: email
+            }, {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+                .then(response => {
+                    if (response.data.message === 'Player added successfully') {
+                        alert('Player added successfully! Your player ID is:' + response.data.player_id);
+                        localStorage.setItem('playerId', response.data.player_id);
+                    } else {
+                        alert('Failed to add player:' + response.data.message);
+                    }
+                })
+                .catch(error => {
+                    if (error.response) {
+                        // 如果有响应信息，说明后端返回了错误相关的内容，根据状态码给出不同提示
+                        const statusCode = error.response.status;
+                        if (statusCode === 400) {
+                            alert('输入的信息不符合要求，请检查用户名和邮箱格式后再试。');
+                        } else if (statusCode === 404) {
+                            alert('请求的资源不存在，请联系管理员确认后端接口是否正确。');
+                        } else if (statusCode === 500) {
+                            alert('后端服务器出现内部错误，请稍后再试或联系管理员。');
+                        } else {
+                            alert('注册玩家时出现错误，状态码：' + statusCode);
+                        }
+                    } else if (error.request) {
+                        // 如果有请求信息但无响应，可能是网络问题等原因
+                        alert('网络连接出现问题，请检查网络设置后再试。');
+                    } else {
+                        // 其他未知错误情况
+                        alert('出现未知错误，请联系管理员。');
+                    }
+                    console.error('Error adding player:', error);
+                });
+        }
+
+        // 记录分数函数，向后端发送本次游戏的分数记录请求
+        function recordScore() {
+            const playerId = localStorage.getItem('playerId');
+            const scoreValue = score;
+            axios.post(`${baseUrl}/scores`, {
+                player_id: playerId,
+                score_value: scoreValue
+            }, {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+                .then(response => {
+                    if (response.data.message === 'Score added successfully') {
+                        alert('Score added successfully!');
+                    } else {
+                        alert('Failed to add score:' + response.data.message);
+                    }
+                })
+                .catch(error => {
+                    if (error.response) {
+                        const statusCode = error.response.status;
+                        if (statusCode === 400) {
+                            alert('输入的信息不符合要求，请检查相关信息后再试。');
+                        } else if (statusCode === 404) {
+                            alert('请求的资源不存在，请联系管理员确认后端接口是否正确。');
+                        } else if (statusCode === 500) {
+                            alert('后端服务器出现内部错误，请稍后再试或联系管理员。');
+                        } else {
+                            alert('记录分数时出现错误，状态码：' + statusCode);
+                        }
+                    } else if (error.request) {
+                        alert('网络连接出现问题，请检查网络设置后再试。');
+                    } else {
+                        alert('出现未知错误，请联系管理员。');
+                    }
+                    console.error('Error adding score:', error);
+                });
+        }
+
+        // 获取并展示玩家信息和得分历史的函数（简单示例，可根据实际完善展示逻辑）
+        function showPlayerInfoAndScores() {
+            const playerId = localStorage.getItem('playerId');
+            if (!playerId) {
+                console.log('Player ID not found. Please register a player first.');
+                return;
+            }
+            axios.get(`${baseUrl}/players/${playerId}`)
+                .then(response => {
+                    const playerInfo = response.data;
+                    const infoText = `Player ID: ${playerInfo.id}, Username: ${playerInfo.username}, Email: ${playerInfo.email}`;
+                    const infoElement = document.createElement('div');
+                    infoElement.textContent = infoText;
+                    document.body.appendChild(infoElement);
+                })
+                .catch(error => {
+                    console.error('Error getting player info:', error);
+                    alert('An error occurred while getting player info.');
+                });
+
+               
+            axios.get(`${baseUrl}/players/${playerId}/scores`)
+                .then(response => {
+                    const scores = response.data;
+                    scores.forEach((scoreData, index) => {
+                        const scoreText = `Score ID: ${scoreData.id}, Score: ${scoreData.score_value}, Date: ${scoreData.game_date}`;
+                        const scoreElement = document.createElement('div');
+                        scoreElement.textContent = scoreText;
+                        document.body.appendChild(scoreElement);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error getting player scores:', error);
+                    alert('An error occurred while getting player scores');
+                });
+
+        }
+
+        window.addEventListener('DOMContentLoaded', function () {
+            var registerButton = document.getElementById('registerButton');
+            registerButton.addEventListener('click', registerPlayer);
+            // 其他依赖页面元素加载完成的初始化操作可以放在这里
+        });
+        window.addEventListener('DOMContentLoaded', function () {
+            showPlayerInfoAndScores();
+        });
+    </script>
+</body>
+
+</html>
